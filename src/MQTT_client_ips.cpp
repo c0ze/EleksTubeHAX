@@ -34,6 +34,7 @@
 #include "Backlights.h"
 #include "Clock.h"
 #include "TFTs.h"
+#include "Notification.h"
 #ifdef MQTT_USE_TLS // For secure WiFi client
 #include <WiFiClientSecure.h>
 
@@ -69,6 +70,8 @@ bool MQTTReportAvailability(const char *status);
 // Helper functions.
 double round1(double value);
 bool endsWith(const char *str, const char *suffix);
+bool hexToColor565(const char *hex, uint16_t *color);
+void MQTTParseNotify(const char *message);
 #ifdef MQTT_USE_TLS
 bool loadCARootCert();
 #endif
@@ -101,6 +104,7 @@ bool MQTTCommandStateReceived = false;
 #define TopicBreath "breath_bpm"
 #define TopicRainbow "rainbow_duration"
 #endif
+#define TopicNotify "notify"
 
 bool MQTTCommandMainPower = true;
 bool MQTTCommandMainPowerReceived = false;
@@ -139,6 +143,12 @@ bool MQTTCommandBreathBpmReceived = false;
 
 float MQTTCommandRainbowSec = -1;
 bool MQTTCommandRainbowSecReceived = false;
+
+char MQTTCommandNotifyText[NOTIFICATION_MAX_TEXT_LEN + 1] = "";
+uint16_t MQTTCommandNotifyDurationSec = NOTIFICATION_DEFAULT_DURATION_SEC;
+uint16_t MQTTCommandNotifyColor = NOTIFICATION_DEFAULT_COLOR;
+uint16_t MQTTCommandNotifyScrollMs = NOTIFICATION_DEFAULT_SCROLL_MS;
+bool MQTTCommandNotifyReceived = false;
 
 // Status to server for Home Assistant.
 bool MQTTStatusMainPower = true;
@@ -508,6 +518,11 @@ bool MQTTStart(bool restart)
     Serial.println("DEBUG: subscribing to MQTT topics...");
 #endif
 
+    MQTTclient.subscribe(concat7_into(outbuf, MQTT_ROOT_TOPIC, "/", UniqueDeviceName, "/", TopicNotify, "", "")); // Notifications work in both MQTT modes
+#ifdef DEBUG_OUTPUT_MQTT
+    Serial.printf("DEBUG: Subscribed to %s/%s/%s\n", MQTT_ROOT_TOPIC, UniqueDeviceName, TopicNotify);
+#endif
+
 #ifdef MQTT_PLAIN_ENABLED
     bool ok = MQTTclient.subscribe(concat7_into(outbuf, UniqueDeviceName, "/directive/#", "", "", "", "", "")); // Subscribes only to messages send to the device
     if (!ok)
@@ -595,6 +610,12 @@ void MQTTCallback(char *topic, byte *payload, unsigned int length)
   Serial.print(" ");
   Serial.println(message);
 #endif
+
+  if (strcmp(topic, concat7_into(outbuf, MQTT_ROOT_TOPIC, "/", UniqueDeviceName, "/", TopicNotify, "", "")) == 0) // Process "<root>/<device>/notify"
+  {
+    MQTTParseNotify(message);
+    return;
+  }
 
 #ifdef MQTT_PLAIN_ENABLED
   // Check if topic ends with "/directive/powerState".
@@ -827,6 +848,39 @@ void MQTTCallback(char *topic, byte *payload, unsigned int length)
   Serial.println("DEBUG: Exiting MQTTCallback...");
 #endif
 } // end of MQTTCallback
+
+// Payload is plain text, or JSON: {"text":"HELLO","duration":10,"color":"#FF7A00","scroll_ms":350}
+// Empty text clears the current notification.
+void MQTTParseNotify(const char *message)
+{
+  MQTTCommandNotifyDurationSec = NOTIFICATION_DEFAULT_DURATION_SEC;
+  MQTTCommandNotifyColor = NOTIFICATION_DEFAULT_COLOR;
+  MQTTCommandNotifyScrollMs = NOTIFICATION_DEFAULT_SCROLL_MS;
+  const char *text = message;
+
+  JsonDocument doc;
+  if (message[0] == '{')
+  {
+    DeserializationError err = deserializeJson(doc, message);
+    if (err)
+    {
+      Serial.print("WARNING: JSON error in notify: ");
+      Serial.println(err.c_str());
+      return;
+    }
+    text = doc["text"] | "";
+    if (doc["duration"].is<uint16_t>())
+      MQTTCommandNotifyDurationSec = doc["duration"];
+    if (doc["scroll_ms"].is<uint16_t>())
+      MQTTCommandNotifyScrollMs = doc["scroll_ms"];
+    if (doc["color"].is<const char *>())
+      hexToColor565(doc["color"].as<const char *>(), &MQTTCommandNotifyColor);
+  }
+
+  strncpy(MQTTCommandNotifyText, text, NOTIFICATION_MAX_TEXT_LEN);
+  MQTTCommandNotifyText[NOTIFICATION_MAX_TEXT_LEN] = '\0';
+  MQTTCommandNotifyReceived = true;
+}
 
 void MQTTLoopFrequently()
 {
@@ -1208,6 +1262,27 @@ bool MQTTReportDiscovery()
   if (!MQTTPublish(concat7_into(outbuf, "homeassistant/number/", UniqueDeviceName, "/", TopicRainbow, "/config", "", ""), &discovery, MQTT_HOME_ASSISTANT_RETAIN_DISCOVERY_MESSAGES))
     return false;
 
+  // Notification. Used with the notify.send_message action; the message is sent as plain text.
+  discovery.clear();
+  discovery["device"]["identifiers"][0] = UniqueDeviceName;
+  discovery["device"]["manufacturer"] = DEVICE_MANUFACTURER;
+  discovery["device"]["model"] = DEVICE_MODEL;
+  discovery["device"]["name"] = DeviceNameForHA;
+  discovery["device"]["sw_version"] = FIRMWARE_VERSION;
+  discovery["device"]["hw_version"] = DEVICE_HW_VERSION;
+  discovery["device"]["connections"][0][0] = "mac";
+  discovery["device"]["connections"][0][1] = WiFi.macAddress();
+  discovery["unique_id"] = concat7_into(outbuf, UniqueDeviceName, "_", TopicNotify, "", "", "", "");
+  discovery["object_id"] = concat7_into(outbuf, UniqueDeviceName, "_", TopicNotify, "", "", "", "");
+  discovery["availability_topic"] = concat7_into(outbuf, MQTT_ROOT_TOPIC, "/", UniqueDeviceName, "/", MQTT_ALIVE_TOPIC, "", "");
+  discovery["name"] = "Notification";
+  discovery["icon"] = "mdi:message-text-clock";
+  discovery["command_topic"] = concat7_into(outbuf, MQTT_ROOT_TOPIC, "/", UniqueDeviceName, "/", TopicNotify, "", "");
+
+  delay(150);
+  if (!MQTTPublish(concat7_into(outbuf, "homeassistant/notify/", UniqueDeviceName, "/", TopicNotify, "/config", "", ""), &discovery, MQTT_HOME_ASSISTANT_RETAIN_DISCOVERY_MESSAGES))
+    return false;
+
   discovery.clear();
   delay(120);
   MQTTReportAvailability(MQTT_ALIVE_MSG_ONLINE); // Publish online status
@@ -1235,6 +1310,23 @@ bool MQTTReportAvailability(const char *status)
 double round1(double value) // Helper function to round a double to one decimal place
 {
   return (int)(value * 10 + 0.5) / 10.0;
+}
+
+bool hexToColor565(const char *hex, uint16_t *color) // Helper function to convert "#RRGGBB" or "RRGGBB" to RGB565; leaves color unchanged if invalid
+{
+  if (hex[0] == '#')
+    hex++;
+  if (strlen(hex) != 6)
+    return false;
+  for (const char *p = hex; *p != '\0'; p++)
+  {
+    if (!isxdigit(static_cast<unsigned char>(*p)))
+      return false;
+  }
+  uint32_t rgb = strtoul(hex, nullptr, 16);
+  uint8_t r = rgb >> 16, g = rgb >> 8, b = rgb;
+  *color = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+  return true;
 }
 
 bool endsWith(const char *str, const char *suffix) // Helper function to check if 'str' ends with 'suffix'

@@ -962,6 +962,30 @@ Entity summary:
 | pulse  | number    | Pulse effect BPM (20–120) |
 | breath | number    | Breath effect BPM (5–60) |
 | rainbow| number    | Rainbow cycle duration seconds (0.2–10) |
+| notify | notify    | Show a text notification on the displays (see below) |
+
+Notifications:
+
+Publish to `elekstubehax/<device_id>/notify` (works in both MQTT modes). The text is shown one character per display; text longer than six characters scrolls. After the duration the clock comes back. Only printable ASCII is supported; other characters show as `?`. A notification is ignored while the displays are off or the menu is open; pressing a button to open the menu or turning off the displays dismisses it.
+
+- Plain text payload: `HELLO` shows "HELLO" for 10 seconds in nixie orange.
+- JSON payload: `{"text":"NEW MAIL","duration":20,"color":"#00A0FF","scroll_ms":300}`
+  - `duration`: seconds, default 10, max 3600; `0` keeps it until cleared.
+  - `color`: `#RRGGBB`, default `#FF7A00`.
+  - `scroll_ms`: milliseconds per scroll step for long text, default 350, min 100.
+- An empty payload (or `{"text":""}`) clears the current notification.
+
+In Home Assistant, use the `notify.send_message` action with the clock's notify entity, for example:
+
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.elekstube_ips_notification
+data:
+  message: "DOOR"
+```
+
+The exact entity_id depends on your device name; look it up under the clock's device page.
 
 Migration note (important): Prior firmware versions used slash separators in `unique_id` / `object_id` (e.g., `myclock123/front`). Home Assistant treats a changed `unique_id` as a brand‑new entity; the old one will remain in the entity registry until manually removed. If you previously had entities with the old format, you can safely delete the obsolete entries in Home Assistant (Settings → Devices & Services → MQTT → device → three‑dot menu → Delete) after the new ones appear.
 

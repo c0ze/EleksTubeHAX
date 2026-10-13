@@ -75,6 +75,11 @@ extern uint8_t MQTTCommandBreathBpm;
 extern bool MQTTCommandBreathBpmReceived;
 extern float MQTTCommandRainbowSec;
 extern bool MQTTCommandRainbowSecReceived;
+extern char MQTTCommandNotifyText[];
+extern uint16_t MQTTCommandNotifyDurationSec;
+extern uint16_t MQTTCommandNotifyColor;
+extern uint16_t MQTTCommandNotifyScrollMs;
+extern bool MQTTCommandNotifyReceived;
 
 // Status to server.
 extern bool MQTTStatusMainPower;

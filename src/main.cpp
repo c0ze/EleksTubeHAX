@@ -16,6 +16,7 @@
 #include "Buttons.h"
 #include "Clock.h"
 #include "Menu.h"
+#include "Notification.h"
 #include "StoredConfig.h"
 #include "TFTs.h"
 #include "WiFi_WPS.h"
@@ -552,6 +553,24 @@ void loop()
     backlights.setRainbowDuration(MQTTCommandRainbowSec);
   }
 
+  // Notifications are transient: not part of MQTTCommandReceived, so they don't trigger a config save.
+  if (MQTTCommandNotifyReceived)
+  {
+    MQTTCommandNotifyReceived = false;
+    if (MQTTCommandNotifyText[0] == '\0')
+    {
+      notification.clear();
+    }
+    else if (tfts.isEnabled() && menu.getState() == Menu::idle)
+    {
+      notification.show(MQTTCommandNotifyText, MQTTCommandNotifyDurationSec, MQTTCommandNotifyColor, MQTTCommandNotifyScrollMs);
+    }
+    else
+    {
+      Serial.println("Notification ignored: displays are off or menu is open.");
+    }
+  }
+
   MQTTStatusMainPower = tfts.isEnabled();
   MQTTStatusBackPower = backlights.getPower();
   MQTTStatusState = (uclock.getActiveGraphicIdx() + 1) * 5; // 10
@@ -651,6 +670,16 @@ void loop()
 #ifdef DIMMING
   checkDimmingNeeded(); // Night or day time brightness change
 #endif
+
+  // Opening the menu or turning off the displays dismisses a notification.
+  if (notification.isActive() && (menu.getState() != Menu::idle || !tfts.isEnabled()))
+  {
+    notification.clear();
+  }
+  if (notification.loop() && tfts.isEnabled())
+  {
+    updateClockDisplay(TFTs::force); // Notification ended, bring back the clock digits
+  }
 
   updateClockDisplay(); // Draw only the changed clock digits!
 
@@ -1185,6 +1214,9 @@ void processGeoLocUpdate()
 
 void updateClockDisplay(TFTs::show_t show)
 {
+  if (notification.isActive())
+    return; // The notification owns the displays; all digits are redrawn with force when it ends.
+
   // Refresh, starting with seconds.
   tfts.setDigit(SECONDS_ONES, uclock.getSecondsOnes(), show);
   tfts.setDigit(SECONDS_TENS, uclock.getSecondsTens(), show);
